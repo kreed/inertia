@@ -104,7 +104,7 @@ set_cursor(XColor *color)
 
 	XFreePixmap(dpy, pixmap);
 
-	XUngrabPointer(dpy, CurrentTime);
+//	XUngrabPointer(dpy, CurrentTime);
 
 	unsigned len = 1000;
 	while (--len && XGrabPointer(dpy, root, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
@@ -200,7 +200,8 @@ get_alarm(XSyncAlarm *alarm, XSyncTestType type, XSyncValue value)
 
 static void fade();
 
-static void handle_xalarm_event(XSyncAlarmNotifyEvent *ev)
+static void
+handle_xalarm_event(XSyncAlarmNotifyEvent *ev)
 {
 	int overflow;
 	XSyncValue reset_timeout;
@@ -302,13 +303,13 @@ parse_args(int argc, char **argv)
 			idle_time = atoi(optarg);
 			break;
 		case 'b':
-			background = strdup(optarg);
+			background = optarg;
 			break;
 		case 'f':
-			foreground = strdup(optarg);
+			foreground = optarg;
 			break;
 		case 'x':
-			failure = strdup(optarg);
+			failure = optarg;
 			break;
 		default:
 			die("Usage: inertia [-t nsecs]\n\n"
