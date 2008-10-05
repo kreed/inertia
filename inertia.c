@@ -104,8 +104,6 @@ set_cursor(XColor *color)
 
 	XFreePixmap(dpy, pixmap);
 
-//	XUngrabPointer(dpy, CurrentTime);
-
 	unsigned len = 1000;
 	while (--len && XGrabPointer(dpy, root, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
 	       GrabModeAsync, GrabModeAsync, trap, cursor, CurrentTime) != GrabSuccess)
