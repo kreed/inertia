@@ -40,7 +40,7 @@
 
 static bool do_fork = false;
 static bool do_lock = false;
-static int idle_time = 60;
+static int idle_time = 180;
 static char *background = "#000000";
 static char *failure = "#aa0000";
 static char *foreground = "#4fa060";
@@ -49,20 +49,19 @@ static Display *dpy = NULL;
 static int screen;
 static Window window;
 static Window trap;
+static int lock_keycode;
 static const char *password;
+static pthread_t sleeper_thread = -1;
 
 static bool fading = false;
 static bool failing = false;
 static bool locked = false;
 static bool control_pid_prop = false;
 
-static pthread_t sleeper_thread = -1;
-
 static XColor background_color;
 static XColor failure_color;
 static XColor foreground_color;
 
-static int lock_keycode;
 static int xsync_event_base;
 static XSyncAlarm idle_alarm = None;
 static XSyncAlarm reset_alarm = None;
