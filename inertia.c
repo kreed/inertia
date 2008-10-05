@@ -49,7 +49,6 @@ static Display *dpy = NULL;
 static int screen;
 static Window window;
 static Window trap;
-static Window listener;
 static const char *password;
 
 static bool fading = false;
@@ -63,7 +62,7 @@ static XColor background_color;
 static XColor failure_color;
 static XColor foreground_color;
 
-static Atom lock_request;
+static int lock_keycode;
 static int xsync_event_base;
 static XSyncAlarm idle_alarm = None;
 static XSyncAlarm reset_alarm = None;
@@ -74,10 +73,8 @@ static void
 cleanup(int sig)
 {
 	if (dpy) {
-		if (control_pid_prop) {
+		if (control_pid_prop)
 			XDeleteProperty(dpy, XDefaultRootWindow(dpy), XInternAtom(dpy, "_INERTIA_RUNNING", False));
-			XDestroyWindow(dpy, listener);
-		}
 		DPMSSetTimeouts(dpy, 0, 0, 60);
 	}
 
@@ -152,8 +149,6 @@ lock()
 	while (--len && XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime)
 	       != GrabSuccess)
 		usleep(1000);
-
-	puts("not here");
 }
 
 static void*
@@ -259,7 +254,7 @@ fade()
 			event_recieved = true;
 			break;
 		}
-		if (XCheckTypedEvent(dpy, ClientMessage, &event) && event.xclient.message_type == lock_request)
+		if (XCheckTypedEvent(dpy, KeyPress, &event) && event.xkey.keycode == lock_keycode)
 			break;
 
 		for (j = 0; j != size; ++j) {
@@ -348,7 +343,7 @@ initialize()
 
 	Window root = XDefaultRootWindow(dpy);
 	Atom inert = XInternAtom(dpy, "_INERTIA_RUNNING", True);
-	lock_request = XInternAtom(dpy, "_INERTIA_LOCK_REQUEST", True);
+	lock_keycode = XKeysymToKeycode(dpy, XK_Insert);
 
 	if (inert) {
 		Atom type;
@@ -361,18 +356,20 @@ initialize()
 
 		if (type) {
 			pid_t pid = data[0];
-//			printf("%ld %ld\n", data[0], data[1]);
 
 			if (getsid(pid) != -1) {
 				if (do_lock) {
-					XClientMessageEvent event;
+					XKeyEvent event;
 					event.display = dpy;
-					event.type = ClientMessage;
-					event.window = root;
-					event.format = 8;
-					event.type = lock_request;
-					event.data.b[0] = 42;
-					printf("%d\n", XSendEvent(dpy, root, True, StructureNotifyMask, (XEvent*)&event));
+					event.root = event.window = root;
+					event.subwindow = None;
+					event.time = CurrentTime;
+					event.x = event.y = event.x_root = event.y_root = 1;
+					event.same_screen = True;
+					event.type = KeyPress;
+					event.keycode = lock_keycode;
+					event.state = Mod1Mask | Mod2Mask | Mod5Mask | LockMask;
+					XSendEvent(dpy, root, False, KeyPressMask, (XEvent*)&event);
 					XFlush(dpy);
 					exit(EXIT_SUCCESS);
 				} else
@@ -442,16 +439,8 @@ initialize()
 
 	chdir("/");
 
-//	listener = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 1, 0, 0);
-
-/*	XSetWindowAttributes wa;
-	wa.event_mask = StructureNotifyMask;
-
-	listener = XCreateWindow(dpy, root, 0, 0, 1, 1,
-			0, CopyFromParent, CopyFromParent, XDefaultVisual(dpy, screen),
-			CWEventMask, &wa); */
-
-	XSelectInput(dpy, root, StructureNotifyMask);
+	XGrabKey(dpy, lock_keycode, Mod1Mask | Mod2Mask | Mod5Mask | LockMask, root, True, GrabModeAsync, GrabModeAsync);
+	XSelectInput(dpy, root, KeyPressMask);
 
 	long data[1];
 	data[0] = getpid();
@@ -475,9 +464,14 @@ main_loop()
 	int keys;
 
 	while (!XNextEvent(dpy, &ev)) {
-		printf("%d\n", ev.type);
 		switch (ev.type) {
 		case KeyPress:
+			if (ev.xkey.keycode == lock_keycode) {
+				if (!locked)
+					lock();
+				break;
+			}
+
 			buf[0] = 0;
 			keys = XLookupString(&ev.xkey, buf, sizeof buf, &ksym, 0);
 
@@ -511,10 +505,6 @@ main_loop()
 				}
 				break;
 			}
-			break;
-		case ClientMessage:
-			if (ev.xclient.message_type == lock_request && !locked)
-				lock();
 			break;
 		default:
 			if (ev.type == xsync_event_base + XSyncAlarmNotify)
