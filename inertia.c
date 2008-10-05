@@ -211,9 +211,8 @@ handle_xalarm_event(XSyncAlarmNotifyEvent *ev)
 		get_alarm(&reset_alarm, XSyncNegativeComparison, reset_timeout);
 		if (!fading && !locked)
 			fade();
-	} else if (ev->alarm == reset_alarm) {
+	} else if (ev->alarm == reset_alarm)
 		get_alarm(&idle_alarm, XSyncPositiveComparison, timeout);
-	}
 }
 
 static void
@@ -471,7 +470,7 @@ main_loop()
 				break;
 			}
 
-			buf[0] = 0;
+			buf[0] = '\0';
 			keys = XLookupString(&ev.xkey, buf, sizeof buf, &ksym, 0);
 
 			if (IsFunctionKey(ksym) || IsKeypadKey(ksym) || IsMiscFunctionKey(ksym)
