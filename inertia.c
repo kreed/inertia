@@ -74,7 +74,7 @@ cleanup(int sig)
 	if (dpy) {
 		if (control_pid_prop)
 			XDeleteProperty(dpy, XDefaultRootWindow(dpy), XInternAtom(dpy, "_INERTIA_RUNNING", False));
-		DPMSSetTimeouts(dpy, 0, 0, 60);
+		DPMSSetTimeouts(dpy, 0, 0, idle_time);
 	}
 
 	if (sig)
@@ -487,6 +487,7 @@ main_loop()
 					else
 						pthread_cancel(sleeper_thread);
 					pthread_create(&sleeper_thread, NULL, reset_cursor, NULL);
+					pthread_detach(sleeper_thread);
 				}
 			case XK_Escape:
 				len = 0;
