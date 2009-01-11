@@ -1,5 +1,5 @@
 /*
- * Copyright © 2007, 2008 Christopher Eby <kreed@kreed.org>
+ * Copyright © 2007-2009 Christopher Eby <kreed@kreed.org>
  *
  * This file is part of Inertia.
  *
@@ -15,7 +15,7 @@
  * See <http://www.gnu.org/licenses/> for the full license text.
  */
 
-#define _XOPEN_SOURCE 500
+#define _XOPEN_SOURCE 600
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -23,11 +23,11 @@
 #include <shadow.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <unistd.h>
-
 #include <X11/Xlib.h>
 #include <X11/extensions/dpms.h>
 #include <X11/extensions/sync.h>
@@ -44,19 +44,24 @@ static int idle_time = 180;
 static char *background = "#000000";
 static char *failure = "#aa0000";
 static char *foreground = "#4fa060";
+static char *lock_str = NULL;
+
+static char entry[256];
+static unsigned entry_len = 0;
+static const char *password;
+
+static bool fading = false;
+static bool failing = false;
+static bool locked = false;
 
 static Display *dpy = NULL;
 static int screen;
 static Window window;
 static Window trap;
-static int lock_keycode;
-static const char *password;
+static Atom quit_atom = 0;
+static Atom lock_atom = 0;
+static int lock_keycode = 0;
 static pthread_t sleeper_thread = -1;
-
-static bool fading = false;
-static bool failing = false;
-static bool locked = false;
-static bool control_pid_prop = false;
 
 static XColor background_color;
 static XColor failure_color;
@@ -65,32 +70,58 @@ static XColor foreground_color;
 static int xsync_event_base;
 static XSyncAlarm idle_alarm = None;
 static XSyncAlarm reset_alarm = None;
-static XSyncValue timeout;
+static XSyncValue idle_timeout;
 static XSyncCounter idle;
+
+static void unlock();
+static int grab_event(struct timeval *timeout);
 
 static void
 cleanup(int sig)
 {
 	if (dpy) {
-		if (control_pid_prop)
-			XDeleteProperty(dpy, XDefaultRootWindow(dpy), XInternAtom(dpy, "_INERTIA_RUNNING", False));
+		if (locked)
+			unlock();
+
 		DPMSSetTimeouts(dpy, 0, 0, idle_time);
+		XCloseDisplay(dpy);
 	}
 
-	if (sig)
-		exit(EXIT_SUCCESS);
-	else if (dpy)
-		/* this will block if we're inside a SIGTERM */
-		XCloseDisplay(dpy);
+	exit(EXIT_FAILURE);
+}
+
+static int
+XNextEventTimeout(Display *dpy, XEvent *ev, struct timeval *timeout)
+{      
+	fd_set fds;
+	int fd = ConnectionNumber(dpy);
+
+	XFlush(dpy);
+
+	for (;;) {
+		if (XPending(dpy)) {
+			XNextEvent(dpy, ev);
+			return 0;
+		}
+
+		FD_ZERO(&fds);
+		FD_SET(fd, &fds);
+
+		select(fd + 1, &fds, NULL, NULL, timeout);
+
+		if (timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0)
+			return 1;
+	}
+
+	return 1;
 }
 
 static void
 die(const char *errstr)
 {
-	cleanup(0);
 	fputs(errstr, stderr);
 	fflush(stderr);
-	exit(EXIT_FAILURE);
+	cleanup(0);
 }
 
 static void
@@ -195,25 +226,6 @@ get_alarm(XSyncAlarm *alarm, XSyncTestType type, XSyncValue value)
 		*alarm = XSyncCreateAlarm(dpy, flags, &attrs);
 }
 
-static void fade();
-
-static void
-handle_xalarm_event(XSyncAlarmNotifyEvent *ev)
-{
-	int overflow;
-	XSyncValue reset_timeout;
-	XSyncValue minus_one;
-
-	if (ev->alarm == idle_alarm) {
-		XSyncIntToValue(&minus_one, -1);
-		XSyncValueAdd(&reset_timeout, ev->counter_value, minus_one, &overflow);
-		get_alarm(&reset_alarm, XSyncNegativeComparison, reset_timeout);
-		if (!fading && !locked)
-			fade();
-	} else if (ev->alarm == reset_alarm)
-		get_alarm(&idle_alarm, XSyncPositiveComparison, timeout);
-}
-
 static void
 fade()
 {
@@ -237,32 +249,24 @@ fade()
 	const int steps = 1200;
 	double ratio = 1.0;
 	const double inc = 1.0 / steps;
-
-	struct timespec sleep;
-	sleep.tv_sec = 0;
-	sleep.tv_nsec = 2000000000 / steps;
-
+	struct timeval sleep = { 0 };
 	unsigned j;
-	XEvent event;
-	bool event_recieved = false;
 
 	while (ratio > 0.01) {
-		if (XCheckTypedEvent(dpy, xsync_event_base + XSyncAlarmNotify, &event)) {
-			event_recieved = true;
-			break;
-		}
-		if (XCheckTypedEvent(dpy, KeyPress, &event) && event.xkey.keycode == lock_keycode)
-			break;
-
 		for (j = 0; j != size; ++j) {
 			red[j] = ired[j] * ratio;
 			green[j] = igreen[j] * ratio;
 			blue[j] = iblue[j] * ratio;
 		}
+		ratio -= inc;
+
 		XF86VidModeSetGammaRamp(dpy, screen, size, red, green, blue);
 
-		nanosleep(&sleep, NULL);
-		ratio -= inc;
+		sleep.tv_usec = 2000000 / steps;
+		if (!grab_event(&sleep)) {
+			fading = false;
+			break;
+		}
 	}
 
 	XF86VidModeSetGammaRamp(dpy, screen, size, ired, igreen, iblue);
@@ -274,19 +278,28 @@ fade()
 	free(igreen);
 	free(iblue);
 
-	if (event_recieved)
-		handle_xalarm_event((XSyncAlarmNotifyEvent*)&event);
-	else if (fading)
+	if (fading) {
 		lock();
+		fading = false;
+	}
+}
 
-	fading = false;
+static void
+lock_now()
+{
+	Display *dpy = XOpenDisplay(NULL);
+	Window root = XDefaultRootWindow(dpy);
+	Atom lock = XInternAtom(dpy, "_INERTIA_LOCK", False);
+	XChangeProperty(dpy, root, lock, XA_CARDINAL, 32, PropModeReplace, NULL, 0);
+	XFlush(dpy);
+	XCloseDisplay(dpy);
 }
 
 static void
 parse_args(int argc, char **argv)
 {
 	for (;;)
-		switch (getopt(argc, argv, "ildt:b:f:x:")) {
+		switch (getopt(argc, argv, "ilLdt:b:f:x:k:")) {
 		case -1:
 			return;
 		case 'l':
@@ -307,15 +320,23 @@ parse_args(int argc, char **argv)
 		case 'x':
 			failure = optarg;
 			break;
+		case 'L':
+			lock_now();
+			exit(EXIT_SUCCESS);
+		case 'k':
+			lock_str = optarg;
+			break;
 		default:
 			die("Usage: inertia [-t nsecs]\n\n"
 				"Options:\n"
-				"	-l	lock on start or lock the running instance\n"
+				"	-l	lock on start\n"
+				"	-L	attempt to lock the running instance\n"
 				"	-d	daemonize\n"
 				"	-t	lock the screen after ARG seconds (default 60)\n"
 				"	-f	use ARG as the screen lock foreground color\n"
 				"	-b	use ARG as the screen lock background color\n"
-				"	-x	use ARG as the screen lock fail color\n");
+				"	-x	use ARG as the screen lock fail color\n"
+				"	-k	grab ARG as the lock key\n");
 		}
 }
 
@@ -333,52 +354,18 @@ initialize()
 		die("inertia: cannot drop privileges; exiting.\n");
 
 	XInitThreads();
-	if (!(dpy = XOpenDisplay(0)))
+	if (!(dpy = XOpenDisplay(NULL)))
 		die("interia: cannot open display; exiting.\n");
 
 	screen = XDefaultScreen(dpy);
 
 	Window root = XDefaultRootWindow(dpy);
-	Atom inert = XInternAtom(dpy, "_INERTIA_RUNNING", True);
-	lock_keycode = XKeysymToKeycode(dpy, XK_Insert);
+	quit_atom = XInternAtom(dpy, "_INERTIA_QUIT", False);
+	lock_atom = XInternAtom(dpy, "_INERTIA_LOCK", False);
 
-	if (inert) {
-		Atom type;
-		unsigned long dummy_long;
-		int dummy_int;
-		long *data;
+	XChangeProperty(dpy, root, quit_atom, XA_CARDINAL, 32, PropModeReplace, NULL, 0);
 
-		XGetWindowProperty(dpy, root, inert, 0, 1, False, XA_CARDINAL, &type,
-		                   &dummy_int, &dummy_long, &dummy_long, (unsigned char**)&data);
-
-		if (type) {
-			pid_t pid = data[0];
-
-			if (getsid(pid) != -1) {
-				if (do_lock) {
-					XKeyEvent event;
-					event.display = dpy;
-					event.root = event.window = root;
-					event.subwindow = None;
-					event.time = CurrentTime;
-					event.x = event.y = event.x_root = event.y_root = 1;
-					event.same_screen = True;
-					event.type = KeyPress;
-					event.keycode = lock_keycode;
-					event.state = Mod1Mask | Mod2Mask | Mod5Mask | LockMask;
-					XSendEvent(dpy, root, False, KeyPressMask, (XEvent*)&event);
-					XFlush(dpy);
-					exit(EXIT_SUCCESS);
-				} else
-					die("intertia: another instance is already running on this display; exiting.\n");
-			}
-
-			XFree(data);
-		}
-	} else
-		inert = XInternAtom(dpy, "_INERTIA_RUNNING", False);
-
-	control_pid_prop = true;
+	XSelectInput(dpy, root, PropertyChangeMask);
 
 	struct sigaction sigact;
 	sigaction(SIGTERM, NULL, &sigact);
@@ -412,14 +399,24 @@ initialize()
 	if (!XParseColor(dpy, colormap, background, &background_color) || !XAllocColor(dpy, colormap, &background_color))
 		die("inertia: invalid background color\n");
 
+	if (lock_str) {
+		KeySym sym = XStringToKeysym(lock_str);
+		if (sym == NoSymbol)
+			die("inertia: failed to parse lock keystr. Exiting.\n");
+		else {
+			lock_keycode = XKeysymToKeycode(dpy, sym);
+			XGrabKey(dpy, lock_keycode, AnyModifier, root, True, GrabModeAsync, GrabModeAsync);
+		}
+	}
+
 	/* deactivate lame built-in screensaver */
 	XSetScreenSaver(dpy, 0, 0, PreferBlanking, AllowExposures);
 
 	/* disable DPMS as well; we'll handle this ourselves */
 	DPMSSetTimeouts(dpy, 0, 0, 0);
 
-	XSyncIntToValue(&timeout, idle_time * 1000);
-	get_alarm(&idle_alarm, XSyncPositiveComparison, timeout);
+	XSyncIntToValue(&idle_timeout, idle_time * 1000);
+	get_alarm(&idle_alarm, XSyncPositiveComparison, idle_timeout);
 
 	if (do_fork) {
 		int pid = fork();
@@ -436,38 +433,35 @@ initialize()
 
 	chdir("/");
 
-	XGrabKey(dpy, lock_keycode, Mod1Mask | Mod2Mask | Mod5Mask | LockMask, root, True, GrabModeAsync, GrabModeAsync);
-	XSelectInput(dpy, root, KeyPressMask);
-
-	long data[1];
-	data[0] = getpid();
-
-	XChangeProperty(dpy, root, inert, XA_CARDINAL, 32, PropModeReplace, (unsigned char*)&data, 1);
 	XFlush(dpy);
 
 	if (do_lock)
 		lock();
 }
 
-static void
-main_loop()
+static int
+grab_event(struct timeval *timeout)
 {
 	XEvent ev;
 
-	unsigned len = 0;
-	char buf[32];
-	char entry[256];
-	KeySym ksym;
-	int keys;
-
-	while (!XNextEvent(dpy, &ev)) {
+	if (!XNextEventTimeout(dpy, &ev, timeout))
 		switch (ev.type) {
-		case KeyPress:
-			if (ev.xkey.keycode == lock_keycode) {
-				if (!locked)
-					lock();
-				break;
+		case PropertyNotify:
+			if (ev.xproperty.atom == quit_atom)
+				cleanup(0);
+			else if (ev.xproperty.atom == lock_atom && !locked) {
+				lock();
+				return 0;
 			}
+		case KeyPress: {
+			if (ev.xkey.keycode == lock_keycode && !locked) {
+				lock();
+				return 0;
+			}
+
+			char buf[32];
+			KeySym ksym;
+			int keys;
 
 			buf[0] = '\0';
 			keys = XLookupString(&ev.xkey, buf, sizeof buf, &ksym, 0);
@@ -478,7 +472,7 @@ main_loop()
 
 			switch(ksym) {
 			case XK_Return:
-				entry[len] = '\0';
+				entry[entry_len] = '\0';
 				if (!strcmp(crypt(entry, password), password))
 					unlock();
 				else {
@@ -490,25 +484,44 @@ main_loop()
 					pthread_detach(sleeper_thread);
 				}
 			case XK_Escape:
-				len = 0;
+				entry_len = 0;
 				break;
 			case XK_BackSpace:
-				if (len)
-					--len;
+				if (entry_len)
+					--entry_len;
 				break;
 			default:
-				if (keys && !iscntrl((int)buf[0]) && len + keys < sizeof entry) {
-					memcpy(entry + len, buf, keys);
-					len += keys;
+				if (keys && !iscntrl((int)buf[0]) && entry_len + keys < sizeof entry) {
+					memcpy(entry + entry_len, buf, keys);
+					entry_len += keys;
 				}
 				break;
 			}
 			break;
-		default:
-			if (ev.type == xsync_event_base + XSyncAlarmNotify)
-				handle_xalarm_event((XSyncAlarmNotifyEvent*)&ev);
 		}
-	}
+		default:
+			if (ev.type == xsync_event_base + XSyncAlarmNotify) {
+				XSyncAlarmNotifyEvent *e = (XSyncAlarmNotifyEvent*)&ev;
+
+				if (e->alarm == idle_alarm) {
+					int overflow;
+					XSyncValue reset_timeout;
+					XSyncValue minus_one;
+
+					XSyncIntToValue(&minus_one, -1);
+					XSyncValueAdd(&reset_timeout, e->counter_value, minus_one, &overflow);
+					get_alarm(&reset_alarm, XSyncNegativeComparison, reset_timeout);
+
+					if (!fading && !locked)
+						fade();
+				} else if (e->alarm == reset_alarm) {
+					get_alarm(&idle_alarm, XSyncPositiveComparison, idle_timeout);
+					return 0;
+				}
+			}
+		}
+
+	return 1;
 }
 
 int
@@ -516,7 +529,8 @@ main(int argc, char **argv)
 {
 	parse_args(argc, argv);
 	initialize();
-	main_loop();
+	for (;;)
+		grab_event(NULL);
 	return EXIT_SUCCESS;
 }
 
