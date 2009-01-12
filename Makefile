@@ -1,6 +1,10 @@
 CFLAGS+=-Wall -lcrypt -lXxf86vm $(shell pkg-config --libs --cflags x11 xext)
 SRC=inertia.c
 TARGET=inertia
+DEST=/usr/local/bin
 
-all:
-	$(CC) -s -fomit-frame-pointer $(SRC) -o $(TARGET) $(CFLAGS)
+$(TARGET): inertia.c
+	$(CC) $(SRC) -o $(TARGET) $(CFLAGS)
+
+install: $(TARGET)
+	install -sm 4755 $(TARGET) $(DEST)
