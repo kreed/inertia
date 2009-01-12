@@ -19,7 +19,6 @@
 
 #include <ctype.h>
 #include <fcntl.h>
-#include <pthread.h>
 #include <shadow.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -49,9 +48,10 @@ static char *lock_str = NULL;
 static char entry[256];
 static unsigned entry_len = 0;
 static const char *password;
+static struct timeval fail_timeout = { 0 };
+static struct timeval *loop_timeout = NULL;
 
 static bool fading = false;
-static bool failing = false;
 static bool locked = false;
 
 static Display *dpy = NULL;
@@ -61,7 +61,6 @@ static Window trap;
 static Atom quit_atom = 0;
 static Atom lock_atom = 0;
 static int lock_keycode = 0;
-static pthread_t sleeper_thread = -1;
 
 static XColor background_color;
 static XColor failure_color;
@@ -110,7 +109,7 @@ XNextEventTimeout(Display *dpy, XEvent *ev, struct timeval *timeout)
 		select(fd + 1, &fds, NULL, NULL, timeout);
 
 		if (timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0)
-			return 1;
+			return -1;
 	}
 
 	return 1;
@@ -127,6 +126,9 @@ die(const char *errstr)
 static void
 set_cursor(XColor *color)
 {
+	if (!locked)
+		return;
+
 	Window root = XRootWindow(dpy, screen);
 
 	Pixmap pixmap = XCreateBitmapFromData(dpy, window, lock_bits, lock_width, lock_height);
@@ -179,16 +181,6 @@ lock()
 		usleep(1000);
 }
 
-static void*
-reset_cursor(void *ptr)
-{
-	failing = true;
-	usleep(500000);
-	set_cursor(&foreground_color);
-	failing = false;
-	return EXIT_SUCCESS;
-}
-
 static void
 unlock()
 {
@@ -198,9 +190,6 @@ unlock()
 	XUngrabKeyboard(dpy, CurrentTime);
 	XDestroyWindow(dpy, window);
 	XDestroyWindow(dpy, trap);
-
-	if (sleeper_thread != -1)
-		pthread_cancel(sleeper_thread);
 
 	locked = false;
 }
@@ -244,26 +233,23 @@ fade()
 
 	XF86VidModeGetGammaRamp(dpy, screen, size, ired, igreen, iblue);
 
-	XFlush(dpy);
-
-	const int steps = 1200;
-	double ratio = 1.0;
-	const double inc = 1.0 / steps;
+	static double ratio_step = 1.0 / 1200;
+	static const int time_step = 2000000 / 1200;
 	struct timeval sleep = { 0 };
+	double ratio;
 	unsigned j;
 
-	while (ratio > 0.01) {
+	for (ratio = 1.0; ratio > 0.01; ratio -= ratio_step) {
 		for (j = 0; j != size; ++j) {
 			red[j] = ired[j] * ratio;
 			green[j] = igreen[j] * ratio;
 			blue[j] = iblue[j] * ratio;
 		}
-		ratio -= inc;
 
 		XF86VidModeSetGammaRamp(dpy, screen, size, red, green, blue);
 
-		sleep.tv_usec = 2000000 / steps;
-		if (!grab_event(&sleep)) {
+		sleep.tv_usec = time_step;
+		if (grab_event(&sleep) == 1) {
 			fading = false;
 			break;
 		}
@@ -444,19 +430,20 @@ grab_event(struct timeval *timeout)
 {
 	XEvent ev;
 
-	if (!XNextEventTimeout(dpy, &ev, timeout))
+	switch (XNextEventTimeout(dpy, &ev, timeout)) {
+	case 0:
 		switch (ev.type) {
 		case PropertyNotify:
 			if (ev.xproperty.atom == quit_atom)
 				cleanup(0);
 			else if (ev.xproperty.atom == lock_atom && !locked) {
 				lock();
-				return 0;
+				return 1;
 			}
 		case KeyPress: {
 			if (ev.xkey.keycode == lock_keycode && !locked) {
 				lock();
-				return 0;
+				return 1;
 			}
 
 			char buf[32];
@@ -476,12 +463,11 @@ grab_event(struct timeval *timeout)
 				if (!strcmp(crypt(entry, password), password))
 					unlock();
 				else {
-					if (!failing)
+					if (!loop_timeout) {
 						set_cursor(&failure_color);
-					else
-						pthread_cancel(sleeper_thread);
-					pthread_create(&sleeper_thread, NULL, reset_cursor, NULL);
-					pthread_detach(sleeper_thread);
+						loop_timeout = &fail_timeout;
+					}
+					fail_timeout.tv_usec = 500000;
 				}
 			case XK_Escape:
 				entry_len = 0;
@@ -516,12 +502,16 @@ grab_event(struct timeval *timeout)
 						fade();
 				} else if (e->alarm == reset_alarm) {
 					get_alarm(&idle_alarm, XSyncPositiveComparison, idle_timeout);
-					return 0;
+					return 1;
 				}
 			}
 		}
+		break;
+	case -1:
+		return -1;
+	}
 
-	return 1;
+	return 0;
 }
 
 int
@@ -530,7 +520,10 @@ main(int argc, char **argv)
 	parse_args(argc, argv);
 	initialize();
 	for (;;)
-		grab_event(NULL);
+		if (grab_event(loop_timeout) == -1) {
+			loop_timeout = NULL;
+			set_cursor(&foreground_color);
+		}
 	return EXIT_SUCCESS;
 }
 
