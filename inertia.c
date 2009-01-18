@@ -91,7 +91,7 @@ cleanup(int sig)
 
 static int
 XNextEventTimeout(Display *dpy, XEvent *ev, struct timeval *timeout)
-{      
+{
 	fd_set fds;
 	int fd = ConnectionNumber(dpy);
 
@@ -255,6 +255,11 @@ fade()
 		}
 	}
 
+	if (fading) {
+		lock();
+		fading = false;
+	}
+
 	XF86VidModeSetGammaRamp(dpy, screen, size, ired, igreen, iblue);
 
 	free(red);
@@ -263,11 +268,6 @@ fade()
 	free(ired);
 	free(igreen);
 	free(iblue);
-
-	if (fading) {
-		lock();
-		fading = false;
-	}
 }
 
 static void
