@@ -440,6 +440,7 @@ grab_event(struct timeval *timeout)
 				lock();
 				return 1;
 			}
+			break;
 		case KeyPress: {
 			if (ev.xkey.keycode == lock_keycode && !locked) {
 				lock();
