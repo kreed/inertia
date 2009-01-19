@@ -339,7 +339,6 @@ initialize()
 	if (setgid(getgid()) == -1 || setuid(getuid()) == -1)
 		die("inertia: cannot drop privileges; exiting.\n");
 
-	XInitThreads();
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("interia: cannot open display; exiting.\n");
 
