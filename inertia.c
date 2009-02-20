@@ -274,7 +274,7 @@ static void
 lock_now()
 {
 	Display *dpy = XOpenDisplay(NULL);
-	Window root = XDefaultRootWindow(dpy);
+	Window root = XRootWindow(dpy, screen);
 	Atom lock = XInternAtom(dpy, "_INERTIA_LOCK", False);
 	XChangeProperty(dpy, root, lock, XA_CARDINAL, 32, PropModeReplace, NULL, 0);
 	XFlush(dpy);
@@ -344,7 +344,7 @@ initialize()
 
 	screen = XDefaultScreen(dpy);
 
-	Window root = XDefaultRootWindow(dpy);
+	Window root = XRootWindow(dpy, screen);
 	quit_atom = XInternAtom(dpy, "_INERTIA_QUIT", False);
 	lock_atom = XInternAtom(dpy, "_INERTIA_LOCK", False);
 
@@ -424,6 +424,18 @@ initialize()
 		lock();
 }
 
+static bool
+pointer_in_hotspot(Display *dpy)
+{
+	int x;
+	int y;
+	Window black;
+	int hole;
+
+	black = XRootWindow(dpy, screen);
+	return XQueryPointer(dpy, black, &black, &black, &x, &y, &hole, &hole, (unsigned*)&hole) && y == 0 && x == 0;
+}
+
 static int
 grab_event(struct timeval *timeout)
 {
@@ -498,7 +510,7 @@ grab_event(struct timeval *timeout)
 					XSyncValueAdd(&reset_timeout, e->counter_value, minus_one, &overflow);
 					get_alarm(&reset_alarm, XSyncNegativeComparison, reset_timeout);
 
-					if (!fading && !locked)
+					if (!fading && !locked && !pointer_in_hotspot(dpy))
 						fade();
 				} else if (e->alarm == reset_alarm) {
 					get_alarm(&idle_alarm, XSyncPositiveComparison, idle_timeout);
