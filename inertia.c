@@ -37,8 +37,11 @@
 
 #include "lock.xbm"
 
-#define IDLE_TIME "180"
-static int idle_time = 180;
+#define STRINGIFY_P(num) #num
+#define STRINGIFY(num) STRINGIFY_P(num)
+
+#define IDLE_TIME 180
+static int idle_time = IDLE_TIME;
 static bool do_fork = false;
 static bool do_lock = false;
 static char *background = "#000000";
@@ -319,7 +322,7 @@ parse_args(int argc, char **argv)
 				"	-l	lock on start\n"
 				"	-L	attempt to lock the running instance\n"
 				"	-d	daemonize\n"
-				"	-t	lock the screen after ARG seconds (default " IDLE_TIME ")\n"
+				"	-t	lock the screen after ARG seconds (default " STRINGIFY(IDLE_TIME) ")\n"
 				"	-f	use ARG as the screen lock foreground color\n"
 				"	-b	use ARG as the screen lock background color\n"
 				"	-x	use ARG as the screen lock fail color\n"
