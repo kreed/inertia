@@ -237,8 +237,8 @@ fade()
 
 	XF86VidModeGetGammaRamp(dpy, screen, size, ired, igreen, iblue);
 
-	static double ratio_step = 1.0 / 1200;
-	static const int time_step = 2000000 / 1200;
+	static double ratio_step = 1.0 / 2400;
+	static const int time_step = 1600;
 	struct timeval sleep = { 0 };
 	double ratio;
 	unsigned j;
