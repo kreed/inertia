@@ -368,7 +368,7 @@ initialize()
 	if (!XAllocColor(dpy, colormap, &background_color))
 		die("inertia: invalid background color\n");
 	if (!XAllocColor(dpy, colormap, &foreground_color))
-		die("inertia: invalid background color\n");
+		die("inertia: invalid foreground color\n");
 
 	if (lock_str) {
 		KeySym sym = XStringToKeysym(lock_str);
