@@ -44,9 +44,6 @@
 static int idle_time = IDLE_TIME;
 static bool do_fork = false;
 static bool do_lock = false;
-static char *background = "#000000";
-static char *failure = "#aa0000";
-static char *foreground = "#4fa060";
 static char *lock_str = NULL;
 
 static char entry[256];
@@ -66,9 +63,8 @@ static Atom quit_atom = 0;
 static Atom lock_atom = 0;
 static int lock_keycode = 0;
 
-static XColor background_color;
-static XColor failure_color;
-static XColor foreground_color;
+static XColor background_color = { 0 };
+static XColor foreground_color = { 0, .red = 0xaaaa };
 
 static int xsync_event_base;
 static XSyncAlarm idle_alarm = None;
@@ -301,15 +297,6 @@ parse_args(int argc, char **argv)
 		case 't':
 			idle_time = atoi(optarg);
 			break;
-		case 'b':
-			background = optarg;
-			break;
-		case 'f':
-			foreground = optarg;
-			break;
-		case 'x':
-			failure = optarg;
-			break;
 		case 'L':
 			lock_now();
 			exit(EXIT_SUCCESS);
@@ -323,9 +310,6 @@ parse_args(int argc, char **argv)
 				"	-L	attempt to lock the running instance\n"
 				"	-d	daemonize\n"
 				"	-t	lock the screen after ARG seconds (default " STRINGIFY(IDLE_TIME) ")\n"
-				"	-f	use ARG as the screen lock foreground color\n"
-				"	-b	use ARG as the screen lock background color\n"
-				"	-x	use ARG as the screen lock fail color\n"
 				"	-k	grab ARG as the lock key\n");
 		}
 }
@@ -381,11 +365,9 @@ initialize()
 		die("inertia: No IDLETIME counter! xorg-server 1.3 and higher should support it. Exiting.\n");
 
 	Colormap colormap = XDefaultColormap(dpy, screen);
-	if (!XParseColor(dpy, colormap, foreground, &foreground_color))
-		die("inertia: invalid foreground color\n");
-	if (!XParseColor(dpy, colormap, failure, &failure_color))
-		die("inertia: invalid fail color\n");
-	if (!XParseColor(dpy, colormap, background, &background_color) || !XAllocColor(dpy, colormap, &background_color))
+	if (!XAllocColor(dpy, colormap, &background_color))
+		die("inertia: invalid background color\n");
+	if (!XAllocColor(dpy, colormap, &foreground_color))
 		die("inertia: invalid background color\n");
 
 	if (lock_str) {
@@ -440,6 +422,19 @@ pointer_in_hotspot(Display *dpy)
 	return XQueryPointer(dpy, black, &black, &black, &x, &y, &hole, &hole, (unsigned*)&hole) && y == 0 && x == 0;
 }
 
+static void
+invert()
+{
+	int screen_width = XDisplayWidth(dpy, screen);
+	int screen_height = XDisplayHeight(dpy, screen);
+	XSetWindowBackground(dpy, window, loop_timeout ? background_color.pixel : foreground_color.pixel);
+	XSetWindowBackground(dpy, trap, loop_timeout ? background_color.pixel : foreground_color.pixel);
+	XClearArea(dpy, window, 0, 0, screen_width, screen_height, false);
+	XClearArea(dpy, trap, 0, 0, screen_width, screen_height, false);
+	set_cursor(loop_timeout ? &foreground_color : &background_color);
+	loop_timeout = loop_timeout ? NULL : &fail_timeout;
+}
+
 static int
 grab_event(struct timeval *timeout)
 {
@@ -479,10 +474,8 @@ grab_event(struct timeval *timeout)
 				if (!strcmp(crypt(entry, password), password))
 					unlock();
 				else {
-					if (!loop_timeout) {
-						set_cursor(&failure_color);
-						loop_timeout = &fail_timeout;
-					}
+					if (!loop_timeout)
+						invert();
 					fail_timeout.tv_usec = 500000;
 				}
 			case XK_Escape:
@@ -536,10 +529,8 @@ main(int argc, char **argv)
 	parse_args(argc, argv);
 	initialize();
 	for (;;)
-		if (grab_event(loop_timeout) == -1) {
-			loop_timeout = NULL;
-			set_cursor(&foreground_color);
-		}
+		if (grab_event(loop_timeout) == -1)
+			invert();
 	return EXIT_SUCCESS;
 }
 
