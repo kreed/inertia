@@ -27,10 +27,12 @@
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+
 #include <X11/Xlib.h>
 #include <X11/extensions/dpms.h>
 #include <X11/extensions/sync.h>
 #include <X11/extensions/xf86vmode.h>
+#include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -278,7 +280,25 @@ lock_now()
 	Window root = XRootWindow(dpy, screen);
 	Atom lock = XInternAtom(dpy, "_INERTIA_LOCK", False);
 	XChangeProperty(dpy, root, lock, XA_CARDINAL, 32, PropModeReplace, NULL, 0);
-	XFlush(dpy);
+	XSync(dpy, True);
+	XCloseDisplay(dpy);
+}
+
+static void
+wakeup()
+{
+	/* Xorg does not seem to provide a way to explicitly reset the idle time
+	 * counter. We work around this by generating a fake key press with XTEST.
+	 * Note that simply using XSendEvent to generate the key press will not
+	 * work; it doesn't reset the idle counter. */
+	Display *dpy = XOpenDisplay(NULL);
+	int dummy;
+	if (!XQueryExtension(dpy, "XTEST", &dummy, &dummy, &dummy))
+		die("inertia: XTEST extension not available; cannot reset idle time\n");
+	int keycode = XKeysymToKeycode(dpy, XK_Shift_L);
+	XTestFakeKeyEvent(dpy, keycode, True, 0);
+	XTestFakeKeyEvent(dpy, keycode, False, 0);
+	XSync(dpy, True);
 	XCloseDisplay(dpy);
 }
 
@@ -286,7 +306,7 @@ static void
 parse_args(int argc, char **argv)
 {
 	for (;;)
-		switch (getopt(argc, argv, "ilLdt:b:f:x:k:T:")) {
+		switch (getopt(argc, argv, "ilLdt:b:f:x:k:T:w")) {
 		case -1:
 			return;
 		case 'l':
@@ -295,6 +315,9 @@ parse_args(int argc, char **argv)
 		case 'd':
 			do_fork = true;
 			break;
+		case 'w':
+			wakeup();
+			exit(EXIT_SUCCESS);
 		case 't':
 			idle_time = atoi(optarg);
 			break;
@@ -315,6 +338,7 @@ parse_args(int argc, char **argv)
 				"	-d	daemonize\n"
 				"	-t	lock the screen after ARG seconds (default " STRINGIFY(IDLE_TIME) ")\n"
 				"	-T	execute the program ARG when fading to screen lock begins\n"
+				"	-w	reset idle time and exit\n"
 				"	-k	grab ARG as the lock key\n");
 		}
 }
