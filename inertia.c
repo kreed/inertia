@@ -45,6 +45,7 @@ static int idle_time = IDLE_TIME;
 static bool do_fork = false;
 static bool do_lock = false;
 static char *lock_str = NULL;
+static char *idle_tester = NULL;
 
 static char entry[256];
 static unsigned entry_len = 0;
@@ -285,7 +286,7 @@ static void
 parse_args(int argc, char **argv)
 {
 	for (;;)
-		switch (getopt(argc, argv, "ilLdt:b:f:x:k:")) {
+		switch (getopt(argc, argv, "ilLdt:b:f:x:k:T:")) {
 		case -1:
 			return;
 		case 'l':
@@ -296,6 +297,9 @@ parse_args(int argc, char **argv)
 			break;
 		case 't':
 			idle_time = atoi(optarg);
+			break;
+		case 'T':
+			idle_tester = optarg;
 			break;
 		case 'L':
 			lock_now();
@@ -310,6 +314,7 @@ parse_args(int argc, char **argv)
 				"	-L	attempt to lock the running instance\n"
 				"	-d	daemonize\n"
 				"	-t	lock the screen after ARG seconds (default " STRINGIFY(IDLE_TIME) ")\n"
+				"	-T	execute the program ARG when fading to screen lock begins\n"
 				"	-k	grab ARG as the lock key\n");
 		}
 }
@@ -507,8 +512,13 @@ grab_event(struct timeval *timeout)
 					XSyncValueAdd(&reset_timeout, e->counter_value, minus_one, &overflow);
 					get_alarm(&reset_alarm, XSyncNegativeComparison, reset_timeout);
 
-					if (!fading && !locked && !pointer_in_hotspot(dpy))
+					if (!fading && !locked && !pointer_in_hotspot(dpy)) {
+						if (idle_tester && fork() == 0) {
+							execlp(idle_tester, idle_tester, NULL);
+							exit(EXIT_SUCCESS);
+						}
 						fade();
+					}
 				} else if (e->alarm == reset_alarm) {
 					get_alarm(&idle_alarm, XSyncPositiveComparison, idle_timeout);
 					return 1;
