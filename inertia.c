@@ -162,15 +162,15 @@ lock()
 	wa.override_redirect = 1;
 	wa.background_pixel = background_color.pixel;
 
-	window = XCreateWindow(dpy, root, 0, 0, screen_width, screen_height,
-			0, CopyFromParent, CopyFromParent, visual,
-			CWOverrideRedirect | CWBackPixel, &wa);
-	XMapRaised(dpy, window);
-
 	trap = XCreateWindow(dpy, root, 0, 0, screen_width - lock_width,
 	                     screen_height - lock_height, 0, CopyFromParent,
 	                     CopyFromParent, visual, CWOverrideRedirect, &wa);
 	XMapRaised(dpy, trap);
+
+	window = XCreateWindow(dpy, root, 0, 0, screen_width, screen_height,
+			0, CopyFromParent, CopyFromParent, visual,
+			CWOverrideRedirect | CWBackPixel, &wa);
+	XMapRaised(dpy, window);
 
 	XWarpPointer(dpy, PointerWindow, window, 0, 0, 0, 0,
 	             (screen_width - lock_width) / 2, (screen_height - lock_height) / 2);
