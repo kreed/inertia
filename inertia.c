@@ -60,13 +60,16 @@ static bool locked = false;
 static Display *dpy = NULL;
 static int screen;
 static Window window;
-static Window trap;
 static Atom quit_atom = 0;
 static Atom lock_atom = 0;
 static int lock_keycode = 0;
 
 static XColor background_color = { 0 };
 static XColor foreground_color = { 0, .red = 0xaaaa };
+
+static Pixmap lock_pixmap;
+static int lock_x;
+static int lock_y;
 
 static int xsync_event_base;
 static XSyncAlarm idle_alarm = None;
@@ -126,24 +129,24 @@ die(const char *errstr)
 }
 
 static void
-set_cursor(XColor *color)
+create_lock(long fg, long bg)
 {
-	if (!locked)
-		return;
+	lock_pixmap = XCreatePixmapFromBitmapData(dpy, window, lock_bits, lock_width, lock_height, fg, bg, 24);
+}
 
-	Window root = XRootWindow(dpy, screen);
-
-	Pixmap pixmap = XCreateBitmapFromData(dpy, window, lock_bits, lock_width, lock_height);
-	Cursor cursor = XCreatePixmapCursor(dpy, pixmap, pixmap, color, color, 0, 0);
-
-	XFreePixmap(dpy, pixmap);
-
-	unsigned len = 1000;
-	while (--len && XGrabPointer(dpy, root, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-	       GrabModeAsync, GrabModeAsync, trap, cursor, CurrentTime) != GrabSuccess)
-		usleep(1000);
-
-	XFreeCursor(dpy, cursor);
+static void
+draw_lock()
+{
+	int screen_width = XDisplayWidth(dpy, screen);
+	int screen_height = XDisplayHeight(dpy, screen);
+	XClearArea(dpy, window, 0, 0, screen_width, screen_height, false);
+	GC gc = XCreateGC(dpy, window, 0, NULL);
+	if (lock_x + lock_width > screen_width)
+		lock_x = screen_width - lock_width;
+	if (lock_y + lock_height > screen_height)
+		lock_y = screen_height - lock_height;
+	XCopyArea(dpy, lock_pixmap, window, gc, 0, 0, lock_width, lock_height, lock_x, lock_y);
+	XFreeGC(dpy, gc);
 }
 
 static void
@@ -162,25 +165,34 @@ lock()
 	wa.override_redirect = 1;
 	wa.background_pixel = background_color.pixel;
 
-	trap = XCreateWindow(dpy, root, 0, 0, screen_width - lock_width,
-	                     screen_height - lock_height, 0, CopyFromParent,
-	                     CopyFromParent, visual, CWOverrideRedirect, &wa);
-	XMapRaised(dpy, trap);
-
 	window = XCreateWindow(dpy, root, 0, 0, screen_width, screen_height,
 			0, CopyFromParent, CopyFromParent, visual,
 			CWOverrideRedirect | CWBackPixel, &wa);
 	XMapRaised(dpy, window);
 
-	XWarpPointer(dpy, PointerWindow, window, 0, 0, 0, 0,
-	             (screen_width - lock_width) / 2, (screen_height - lock_height) / 2);
+	create_lock(foreground_color.pixel, background_color.pixel);
+	lock_x = (screen_width - lock_width) / 2;
+	lock_y = (screen_height - lock_height) / 2;
+	draw_lock();
+	XWarpPointer(dpy, PointerWindow, window, 0, 0, 0, 0, lock_x, lock_y);
 
-	set_cursor(&foreground_color);
+	XColor invisColor = { 0 };
+	char invis[] = { 0 };
+	Pixmap pixmap = XCreateBitmapFromData(dpy, window, invis, 1, 1);
+	Cursor cursor = XCreatePixmapCursor(dpy, pixmap, pixmap, &invisColor, &invisColor, 0, 0);
 
 	unsigned len = 1000;
+	while (--len && XGrabPointer(dpy, root, False, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+	       GrabModeAsync, GrabModeAsync, window, cursor, CurrentTime) != GrabSuccess)
+		usleep(1000);
+
+	len = 1000;
 	while (--len && XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime)
 	       != GrabSuccess)
 		usleep(1000);
+
+	XFreePixmap(dpy, pixmap);
+	XFreeCursor(dpy, cursor);
 }
 
 static void
@@ -191,7 +203,6 @@ unlock()
 	XUngrabPointer(dpy, CurrentTime);
 	XUngrabKeyboard(dpy, CurrentTime);
 	XDestroyWindow(dpy, window);
-	XDestroyWindow(dpy, trap);
 
 	locked = false;
 }
@@ -431,14 +442,20 @@ pointer_in_hotspot(Display *dpy)
 static void
 invert()
 {
-	int screen_width = XDisplayWidth(dpy, screen);
-	int screen_height = XDisplayHeight(dpy, screen);
-	XSetWindowBackground(dpy, window, loop_timeout ? background_color.pixel : foreground_color.pixel);
-	XSetWindowBackground(dpy, trap, loop_timeout ? background_color.pixel : foreground_color.pixel);
-	XClearArea(dpy, window, 0, 0, screen_width, screen_height, false);
-	XClearArea(dpy, trap, 0, 0, screen_width, screen_height, false);
-	set_cursor(loop_timeout ? &foreground_color : &background_color);
+	long fg, bg;
+	if (loop_timeout) {
+		// normal
+		fg = foreground_color.pixel;
+		bg = background_color.pixel;
+	} else {
+		// fail
+		fg = background_color.pixel;
+		bg = foreground_color.pixel;
+	}
+	XSetWindowBackground(dpy, window, bg);
+	create_lock(fg, bg);
 	loop_timeout = loop_timeout ? NULL : &fail_timeout;
+	draw_lock();
 }
 
 static int
@@ -446,8 +463,9 @@ grab_event(struct timeval *timeout)
 {
 	XEvent ev;
 
-	switch (XNextEventTimeout(dpy, &ev, timeout)) {
-	case 0:
+	if (XNextEventTimeout(dpy, &ev, timeout) == -1) {
+		return -1;
+	} else {
 		switch (ev.type) {
 		case PropertyNotify:
 			if (ev.xproperty.atom == quit_atom)
@@ -500,6 +518,11 @@ grab_event(struct timeval *timeout)
 			}
 			break;
 		}
+		case MotionNotify:
+			lock_x = ev.xmotion.x;
+			lock_y = ev.xmotion.y;
+			draw_lock();
+			break;
 		default:
 			if (ev.type == xsync_event_base + XSyncAlarmNotify) {
 				XSyncAlarmNotifyEvent *e = (XSyncAlarmNotifyEvent*)&ev;
@@ -526,9 +549,6 @@ grab_event(struct timeval *timeout)
 				}
 			}
 		}
-		break;
-	case -1:
-		return -1;
 	}
 
 	return 0;
