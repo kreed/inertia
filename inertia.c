@@ -16,6 +16,7 @@
  */
 
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -263,6 +264,11 @@ start:
 	}
 
 	chdir("/");
+
+	struct sigaction sig_act;
+	memset(&sig_act, 0x0, sizeof(struct sigaction));
+	sig_act.sa_flags = SA_NOCLDWAIT;
+	sigaction(SIGCHLD, &sig_act, NULL);
 
 	XFlush(dpy);
 

@@ -1,4 +1,4 @@
-CFLAGS+=-Wall -lXxf86vm $(shell pkg-config --libs --cflags x11 xext)
+CFLAGS+=-O2 -Wall -lXxf86vm $(shell pkg-config --libs --cflags x11 xext)
 SRC=inertia.c
 TARGET=inertia
 DEST=/usr/local/bin
